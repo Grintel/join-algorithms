@@ -1,11 +1,18 @@
 import hashlib
-from typing import Dict, Tuple, List
+import time
+from typing import Dict, Tuple, List, Callable
 
-def get_file_size(path: str) -> int:
-    return sum(1 for line in open(path))
+def get_tables(path: str) -> Tuple[Dict[str, List[Tuple[int, int]]], Dict[int, str]]:
+    """ Reads the rdf triplet files and builds vertically tables out of every property found
 
-def get_tables(path: str) -> Dict[str, List[Tuple[int, int]]]:
-    file_size = get_file_size(path)
+    Args:
+        path (str):  path to rdf file
+
+    Returns:
+        Tuple[Dict[str, List[Tuple[int, int]]], Dict[int, str]]: 
+        First Item of tuple are the tables of the relations.
+        Second Item is the hashmap of string values found in the file.
+    """
     string_dict = {}
     tables = {}
     with open(path, "r") as file:
@@ -29,9 +36,28 @@ def get_tables(path: str) -> Dict[str, List[Tuple[int, int]]]:
     return tables, string_dict
 
 def get_hash(value: str) -> int:
+    """Generates an 16 digit md5 hash of the given value
+
+    Args:
+        value (str): some string
+
+    Returns:
+        int: integer hash of given string
+    """
     return int(hashlib.md5(value.encode("utf-8")).hexdigest(), 16)
 
-def hash_join(table_1: List[Tuple[int, int]], column_1: int, table_2 : List[Tuple[int, int]], column_2: int):
+def hash_join(table_1: List[Tuple[int, int]], column_1: int, table_2 : List[Tuple[int, int]], column_2: int) -> List[Tuple[int]]:
+    """ Joins the given two tables on the given column indices by using the sort merge algorithm
+
+    Args:
+        table_1 (List[Tuple[int, int]]): Preferrably smaller table
+        index_1 (int): Column of table_1 on which the join will be executed
+        table_2 (List[Tuple[int, int]]): Preferrably larger table
+        index_2 (int): Column of table_1 on which the join will be executed
+
+    Returns:
+        List[Tuple[int, int]]: New Table as the result of the join
+    """
     # hash phase
     hash_map = dict()
     for x in table_1:
@@ -47,16 +73,29 @@ def hash_join(table_1: List[Tuple[int, int]], column_1: int, table_2 : List[Tupl
         key = row1[column_2] 
         if key in hash_map:
             for row2 in hash_map[key]:
-                result.append((row1, row2))
+                rows = [cell for cell in row2] + [cell for cell in row1]
+                result.append(rows)
     return result
 
 def sort_merge_join(table_1 : List[Tuple[int, int]], index_1: int,
                     table_2: List[Tuple[int, int]], index_2: int) -> List[Tuple[int, int]]:
+    """ Joins the given two tables on the given column indices by using the sort merge algorithm
+
+    Args:
+        table_1 (List[Tuple[int, int]]): Preferrably smaller table
+        index_1 (int): Column of table_1 on which the join will be executed
+        table_2 (List[Tuple[int, int]]): Preferrably larger table
+        index_2 (int): Column of table_1 on which the join will be executed
+
+    Returns:
+        List[Tuple[int, int]]: New Table as the result of the join
+    """
     # sort values
     table_1.sort(key=lambda x: x[index_1])
     table_2.sort(key=lambda x: x[index_2])
 
-    # merge value
+    # merge values
+    # initialize indices
     i = 0
     j = 0
     i_max = len(table_1) - 1
@@ -65,31 +104,55 @@ def sort_merge_join(table_1 : List[Tuple[int, int]], index_1: int,
     while i <= i_max and j <= j_max: 
         if table_1[i][index_1] > table_2[j][index_2]:
             j += 1
-        elif table_1[i][index_2] < table_2[j][index_2]:
+        elif table_1[i][index_1] < table_2[j][index_2]:
             i += 1
         else:
-            output_table.append([table_1[i], table_2[j]])
+            rows = [cell for cell in table_1[i]] + [cell for cell in table_2[j]]
+            output_table.append(rows)
+
+            #check if other columns of table2 match the value of table 1
             j_prime = j + 1
             while j_prime <= j_max and table_1[i][index_1] == table_2[j_prime][index_2]:
-                output_table.append([table_1[i], table_2[j_prime]])
+                rows = [cell for cell in table_1[i]] + [cell for cell in table_2[j_prime]]
+                output_table.append(rows)
                 j_prime += 1
-            i_prime = i + 1
-            while i_prime <= i_max and table_1[i_prime][index_1] == table_2[j_prime][index_2]:
-                output_table.append([table_1[i_prime], table_2[j]])
-                i_prime += 1
-            i = i_prime
-            j = j_prime
-    return output_table
             
+            #check if other columns of table1 match the value of table2
+            i_prime = i + 1
+            while i_prime <= i_max and table_1[i_prime][index_1] == table_2[j][index_2]:
+                rows = [cell for cell in table_1[i_prime]] + [cell for cell in table_2[j]]
+                output_table.append(rows)
+                i_prime += 1
+            i += 1
+            j += 1
 
+    return output_table
+
+
+def merge_tables(merge_func: Callable[[List[Tuple[int]], int, List[Tuple[int]], int], List[Tuple[int]]],
+                 tables: Dict[str, List[Tuple[int, int]]]) -> float:
+    """ Merges the given tables as described in the exercise
+
+
+    Args:
+        merge_func (Callable[[List[Tuple[int]], int, List[Tuple[int]], int], List[Tuple[int]]]): Join Function
+        tables (Dict[str, List[Tuple[int, int]]]): Different Tables
+
+    Returns:
+        float: time elapsed in seconds
+    """
+    start = time.time()
+    follows_table = tables["wsdbm:follows"]
+    friend_of_table = tables["wsdbm:friendOf"]
+    likes_table = tables["wsdbm:likes"]
+    has_review_table = tables["rev:hasReview"]
+    friend_follows = merge_func(follows_table, 0, friend_of_table, 1)
+    merged = merge_func(friend_follows, 3, likes_table, 0)
+    merged = merge_func(merged, 5, has_review_table, 0)
+    return time.time() - start
 
 
 if __name__ == "__main__":
     tables, string_dict = get_tables("100k.txt")
-    follows_table = tables["wsdbm:follows"]
-    friend_of_table = tables["wsdbm:friendOf"]
-    
-    print(len(friend_of_table))
-    print(len(follows_table))
-    
-    print(sort_merge_join(follows_table, 0, friend_of_table, 1))
+    print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(hash_join, tables), "s")
+    print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(hash_join, tables), "s")
