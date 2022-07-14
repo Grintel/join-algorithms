@@ -36,13 +36,13 @@ def get_tables(path: str) -> Dict[str, np.array]:
     return tables, string_dict
 
 def get_hash(value: str) -> int:
-    return int(hashlib.md5(value).hexdigest(), 16)
+    return int(hashlib.md5(value.encode("utf-8")).hexdigest(), 16)
 
 def hash_join(table_1: np.ndarray, column_1: int, table_2 : np.ndarray, column_2: int, word_dict):
     # hash phase
     hash_map = dict()
     for x in table_1:
-        key = x[column_1].item()
+        key = x[column_1]
         if key not in hash_map:
             hash_map[key] = np.ndarray((1, 2), buffer=np.array([x]), dtype=int)
         else:
