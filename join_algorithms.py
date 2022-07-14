@@ -170,4 +170,4 @@ def merge_tables(merge_func: Callable[[List[Tuple[int]], int, List[Tuple[int]], 
 if __name__ == "__main__":
     tables, string_dict = get_tables("100k.txt")
     print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(hash_join, tables), "s")
-    print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(hash_join, tables), "s")
+    print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(sort_merge_join, tables), "s")
