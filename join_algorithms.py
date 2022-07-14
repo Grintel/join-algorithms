@@ -157,10 +157,18 @@ def merge_tables(merge_func: Callable[[List[Tuple[int]], int, List[Tuple[int]], 
         float: time elapsed in seconds
     """
     start = time.time()
-    follows_table = tables["wsdbm:follows"]
-    friend_of_table = tables["wsdbm:friendOf"]
-    likes_table = tables["wsdbm:likes"]
-    has_review_table = tables["rev:hasReview"]
+    #follows_table = tables["wsdbm:follows"]
+    follows_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/follows>"]
+    
+    #friend_of_table = tables["wsdbm:friendOf"]
+    friend_of_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/friendOf>"]
+    
+    #likes_table = tables["wsdbm:likes"]
+    likes_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/likes>"]
+    
+    #has_review_table = tables["rev:hasReview"]
+    has_review_table = tables["<http://purl.org/stuff/rev#hasReview>"]
+    
     friend_follows = merge_func(follows_table, 0, friend_of_table, 1)
     merged = merge_func(friend_follows, 3, likes_table, 0)
     merged = merge_func(merged, 5, has_review_table, 0)
@@ -168,6 +176,6 @@ def merge_tables(merge_func: Callable[[List[Tuple[int]], int, List[Tuple[int]], 
 
 
 if __name__ == "__main__":
-    tables, string_dict = get_tables("100k.txt")
+    tables, string_dict = get_tables("watdiv.10M.nt")
     print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(hash_join, tables), "s")
     print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(sort_merge_join, tables), "s")
