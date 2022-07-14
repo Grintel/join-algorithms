@@ -13,7 +13,10 @@ def get_tables(path: str) -> Tuple[Dict[str, List[Tuple[int, int]]], Dict[int, s
         First Item of tuple are the tables of the relations.
         Second Item is the hashmap of string values found in the file.
     """
+    # used for translation of hash -> word
     string_dict = {}
+
+    # stores all properties found
     tables = {}
     with open(path, "r") as file:
         while True:
@@ -22,13 +25,20 @@ def get_tables(path: str) -> Tuple[Dict[str, List[Tuple[int, int]]], Dict[int, s
                     break
             if len(line.split("\t")) == 3:
                 subject, property, object = line.split("\t")
+                # prune object because of strange formatting
                 object = object[:-3]
+
+                # hash all values to get integers
                 subject_hash = get_hash(subject)
                 property_hash = get_hash(property)
                 object_hash = get_hash(object)
+
+                # store which hash belongs to which string
                 string_dict[subject_hash] = subject
                 string_dict[property_hash] = property
                 string_dict[object_hash] = object
+
+                # build tables
                 if property not in tables:            
                     tables[property] = [(subject_hash, object_hash)]
                 else:
@@ -60,6 +70,8 @@ def hash_join(table_1: List[Tuple[int, int]], column_1: int, table_2 : List[Tupl
     """
     # hash phase
     hash_map = dict()
+    
+    # store every occurance of join column and its row in a dict.
     for x in table_1:
         key = x[column_1]
         if key not in hash_map:
@@ -90,7 +102,7 @@ def sort_merge_join(table_1 : List[Tuple[int, int]], index_1: int,
     Returns:
         List[Tuple[int, int]]: New Table as the result of the join
     """
-    # sort values
+    # sort values by their join column
     table_1.sort(key=lambda x: x[index_1])
     table_2.sort(key=lambda x: x[index_2])
 
@@ -107,6 +119,7 @@ def sort_merge_join(table_1 : List[Tuple[int, int]], index_1: int,
         elif table_1[i][index_1] < table_2[j][index_2]:
             i += 1
         else:
+            # match was found
             rows = [cell for cell in table_1[i]] + [cell for cell in table_2[j]]
             output_table.append(rows)
 
@@ -123,6 +136,8 @@ def sort_merge_join(table_1 : List[Tuple[int, int]], index_1: int,
                 rows = [cell for cell in table_1[i_prime]] + [cell for cell in table_2[j]]
                 output_table.append(rows)
                 i_prime += 1
+
+            # increment indices
             i += 1
             j += 1
 
