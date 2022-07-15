@@ -1,17 +1,26 @@
 import hashlib
 import time
+import numpy as np
 from typing import Dict, Tuple, List, Callable
 
-def get_tables(path: str) -> Tuple[Dict[str, List[Tuple[int, int]]], Dict[int, str]]:
-    """ Reads the rdf triplet files and builds vertically tables out of every property found
+# Determines at what factor the output table will be scaled down from worst case
+INITAL_OUTPUT_TABLE_SIZE_FACTOR = 1000000
+
+# Size of how many elemts should be allocated when increasing output table size
+OUTPUT_TABLE_INCREMENT_SIZE = 1000000 
+
+# Size of how many elemts should be allocated when increasing hash table size
+HASH_TABLE_INCREMENT_SIZE = 10000
+
+def get_tables(path: str, properties: List[str]) -> np.ndarray:
+    """_summary_
 
     Args:
-        path (str):  path to rdf file
+        path (str): _description_
+        properties (List[str]): _description_
 
     Returns:
-        Tuple[Dict[str, List[Tuple[int, int]]], Dict[int, str]]: 
-        First Item of tuple are the tables of the relations.
-        Second Item is the hashmap of string values found in the file.
+        np.ndarray: _description_
     """
     # used for translation of hash -> word
     string_dict = {}
@@ -25,26 +34,34 @@ def get_tables(path: str) -> Tuple[Dict[str, List[Tuple[int, int]]], Dict[int, s
                     break
             if len(line.split("\t")) == 3:
                 subject, property, object = line.split("\t")
-                # prune object because of strange formatting
-                object = object[:-3]
+                if property in properties:
+                    # prune object because of strange formatting
+                    object = object[:-3]
 
-                # hash all values to get integers
-                subject_hash = get_hash(subject)
-                property_hash = get_hash(property)
-                object_hash = get_hash(object)
+                    # hash all values to get integers
+                    subject_hash = get_hash(subject)
+                    object_hash = get_hash(object)
 
-                # store which hash belongs to which string
-                string_dict[subject_hash] = subject
-                string_dict[property_hash] = property
-                string_dict[object_hash] = object
+                    # store which hash belongs to which string
+                    string_dict[subject_hash] = subject
+                    string_dict[object_hash] = object
 
-                # build tables
-                if property not in tables:            
-                    tables[property] = [(subject_hash, object_hash)]
-                else:
-                    tables[property].append((subject_hash, object_hash))
-    return tables, string_dict
+                    # build tables
+                    if property not in tables:            
+                        tables[property] = [[subject_hash, object_hash]]
+                    else:
+                        tables[property].append([subject_hash, object_hash])
+    for key, value in tables.items():
+        tables[key] = np.array(value, dtype=np.uint64)
+    write_string_dict_to_file(string_dict=string_dict, path="stringHashs.txt")
+    return tables
 
+def write_string_dict_to_file(string_dict: Dict[int, str],path: str):
+    with open(path, "a") as file:
+        for key, value in string_dict.items():
+            file.write(str(key) + "," + value + "\n")
+            
+            
 def get_hash(value: str) -> int:
     """Generates an 16 digit md5 hash of the given value
 
@@ -54,19 +71,19 @@ def get_hash(value: str) -> int:
     Returns:
         int: integer hash of given string
     """
-    return int(hashlib.md5(value.encode("utf-8")).hexdigest(), 16)
+    return int(hashlib.md5(value.encode("utf-8")).hexdigest(), 16) % (2 ** 32)
 
-def hash_join(table_1: List[Tuple[int, int]], column_1: int, table_2 : List[Tuple[int, int]], column_2: int) -> List[Tuple[int]]:
+def hash_join(table_1: np.ndarray, column_1: int, table_2 : np.ndarray, column_2: int) -> np.ndarray:
     """ Joins the given two tables on the given column indices by using the sort merge algorithm
 
     Args:
-        table_1 (List[Tuple[int, int]]): Preferrably smaller table
+        table_1 (np.ndarray): Preferrably smaller table
         index_1 (int): Column of table_1 on which the join will be executed
-        table_2 (List[Tuple[int, int]]): Preferrably larger table
+        table_2 (np.ndarray): Preferrably larger table
         index_2 (int): Column of table_1 on which the join will be executed
 
     Returns:
-        List[Tuple[int, int]]: New Table as the result of the join
+        np.ndarray: New Table as the result of the join
     """
     # hash phase
     hash_map = dict()
@@ -75,36 +92,70 @@ def hash_join(table_1: List[Tuple[int, int]], column_1: int, table_2 : List[Tupl
     for x in table_1:
         key = x[column_1]
         if key not in hash_map:
-            hash_map[key] = [x]
+            # add a tuple of index and an empty array
+            hash_map[key] = (0, np.empty((HASH_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64))
+            hash_map[key][1][1] = x
+            hash_map[key][0] += 1
+        
         else:
-            hash_map[key].append(x)
+            current_index = hash_map[key][0]
+            try:
+                # if index is out of bound, allocate new memory
+                hash_map[key][1][current_index] = x
+                hash_map[key][0] += 1
+            except IndexError:
+                # allocate new empty memory
+                hash_map[key][1] = np.concatenate((hash_map[key][1], 
+                                                   np.empty((HASH_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
+                                                   dtype=np.uint64)
+                hash_map[key][1][current_index] = x
+                hash_map[key][0] += 1
+                
 
     # join phase
-    result = []
+    
+    # allocating the memory with an estimation that the size will be of a factor of the absolute worst case O(N*M)
+    # fiddeling with this factor can help with ram problems
+    n = table_1.shape[0]
+    m = table_2.shape[0]
+    output_table = np.empty((int((n * m) / INITAL_OUTPUT_TABLE_SIZE_FACTOR), table_1.shape[1] + table_2.shape[1]),
+                            dtype=np.uint64)
+    
+    i = 0
     for row1 in table_2:
         key = row1[column_2] 
         if key in hash_map:
             for row2 in hash_map[key]:
-                rows = [cell for cell in row2] + [cell for cell in row1]
-                result.append(rows)
-    return result
+                split = len(row1)
+                try:
+                # If index is running out of bound, allocate new memory and join it to the output_table
+                    output_table[i, :split] = row1
+                    output_table[i, split:] = row2
+                except IndexError:
+                # allocate 1,000,000 new rows
+                    output_table = np.concatenate((output_table, 
+                                                np.empty((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
+                                                dtype=np.uint64)
+                    output_table[i, :split] = row1
+                    output_table[i, split:] = row2
+    return output_table
 
-def sort_merge_join(table_1 : List[Tuple[int, int]], index_1: int,
-                    table_2: List[Tuple[int, int]], index_2: int) -> List[Tuple[int, int]]:
+def sort_merge_join(table_1 : np.ndarray, index_1: int,
+                    table_2: np.ndarray, index_2: int) -> np.ndarray:
     """ Joins the given two tables on the given column indices by using the sort merge algorithm
 
     Args:
-        table_1 (List[Tuple[int, int]]): Preferrably smaller table
+        table_1 (np.ndarray): Preferrably smaller table
         index_1 (int): Column of table_1 on which the join will be executed
-        table_2 (List[Tuple[int, int]]): Preferrably larger table
+        table_2 (np.ndarray): Preferrably larger table
         index_2 (int): Column of table_1 on which the join will be executed
 
     Returns:
-        List[Tuple[int, int]]: New Table as the result of the join
+        np.ndarray: New Table as the result of the join
     """
     # sort values by their join column
-    table_1.sort(key=lambda x: x[index_1])
-    table_2.sort(key=lambda x: x[index_2])
+    table_1 = table_1[table_1[:, index_1].argsort()]
+    table_2 = table_2[table_2[:, index_2].argsort()]
 
     # merge values
     # initialize indices
@@ -112,51 +163,83 @@ def sort_merge_join(table_1 : List[Tuple[int, int]], index_1: int,
     j = 0
     i_max = len(table_1) - 1
     j_max = len(table_2) - 1
-    output_table = []
-    while i <= i_max and j <= j_max: 
+    
+    # allocating the memory with an estimation that the size will be 10% of the absolute worst case O(N*M)
+    # fiddeling with this factor can help with ram problems
+    output_table = np.empty((int((i_max * j_max) / INITAL_OUTPUT_TABLE_SIZE_FACTOR), table_1.shape[1] + table_2.shape[1]),
+                            dtype=np.uint64)
+    count = 0
+    while i <= i_max and j <= j_max:
         if table_1[i][index_1] > table_2[j][index_2]:
             j += 1
         elif table_1[i][index_1] < table_2[j][index_2]:
             i += 1
         else:
             # match was found
-            rows = [cell for cell in table_1[i]] + [cell for cell in table_2[j]]
-            output_table.append(rows)
-
+            split = len(table_1[i])
+            try:
+                # If index is running out of bound, allocate new memory and join it to the output_table
+                output_table[count, :split] = table_1[i]
+                output_table[count, split:] = table_2[j]
+            except IndexError:
+                # allocate 1,000,000 new rows
+                output_table = np.concatenate((output_table, 
+                                              np.empty((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
+                                              dtype=np.uint64)
+                output_table[count, :split] = table_1[i]
+                output_table[count, split:] = table_2[j]
+            count += 1
             #check if other columns of table2 match the value of table 1
             j_prime = j + 1
             while j_prime <= j_max and table_1[i][index_1] == table_2[j_prime][index_2]:
-                rows = [cell for cell in table_1[i]] + [cell for cell in table_2[j_prime]]
-                output_table.append(rows)
+                try:
+                    output_table[count, :split] = table_1[i]
+                    output_table[count, split:] = table_2[j]
+                except IndexError:
+                    output_table = np.concatenate((output_table,
+                                                   np.empty((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
+                                                   dtype=np.uint64)
+                    output_table[count, :split] = table_1[i]
+                    output_table[count, split:] = table_2[j]
+                count += 1
                 j_prime += 1
             
             #check if other columns of table1 match the value of table2
             i_prime = i + 1
             while i_prime <= i_max and table_1[i_prime][index_1] == table_2[j][index_2]:
-                rows = [cell for cell in table_1[i_prime]] + [cell for cell in table_2[j]]
-                output_table.append(rows)
+                try:
+                    output_table[count, :split] = table_1[i]
+                    output_table[count, split:] = table_2[j]
+                except IndexError:
+                    output_table = np.concatenate((output_table,
+                                                   np.empty((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
+                                                  dtype=np.uint64)
+                    output_table[count, :split] = table_1[i]
+                    output_table[count, split:] = table_2[j]
+                count += 1
                 i_prime += 1
 
             # increment indices
             i += 1
             j += 1
+    output_table = output_table[:count]
+    return output_table[:count,:]
 
-    return output_table
 
-
-def merge_tables(merge_func: Callable[[List[Tuple[int]], int, List[Tuple[int]], int], List[Tuple[int]]],
-                 tables: Dict[str, List[Tuple[int, int]]]) -> float:
+def merge_tables(merge_func: Callable[[np.ndarray, int, np.ndarray, int], np.ndarray],
+                 tables: Dict[str, np.ndarray]) -> float:
     """ Merges the given tables as described in the exercise
 
 
     Args:
-        merge_func (Callable[[List[Tuple[int]], int, List[Tuple[int]], int], List[Tuple[int]]]): Join Function
-        tables (Dict[str, List[Tuple[int, int]]]): Different Tables
+        merge_func (np.ndarray, int, np.ndarray, int], np.ndarray): Join Function
+        tables (Dict[str, np.ndarray): Different Tables
 
     Returns:
         float: time elapsed in seconds
     """
     start = time.time()
+    
     #follows_table = tables["wsdbm:follows"]
     follows_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/follows>"]
     
@@ -170,12 +253,21 @@ def merge_tables(merge_func: Callable[[List[Tuple[int]], int, List[Tuple[int]], 
     has_review_table = tables["<http://purl.org/stuff/rev#hasReview>"]
     
     friend_follows = merge_func(follows_table, 0, friend_of_table, 1)
+    print(len(friend_follows))
     merged = merge_func(friend_follows, 3, likes_table, 0)
+    print(merged)
+    
+    #print(merged)
     merged = merge_func(merged, 5, has_review_table, 0)
+    
+    print(merged[-5:])
     return time.time() - start
 
 
 if __name__ == "__main__":
-    tables, string_dict = get_tables("watdiv.10M.nt")
-    print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(hash_join, tables), "s")
+    properties_big = ["<http://db.uwaterloo.ca/~galuc/wsdbm/follows>", "<http://db.uwaterloo.ca/~galuc/wsdbm/friendOf>",
+                  "<http://db.uwaterloo.ca/~galuc/wsdbm/likes>", "<http://purl.org/stuff/rev#hasReview>"]
+    properties_small = ["wsdbm:follows", "wsdbm:friendOf", "wsdbm:likes", "rev:hasReview"]
+    tables = get_tables("watdiv.10M.nt", properties=properties_big)
     print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(sort_merge_join, tables), "s")
+    #print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(sort_merge_join, tables), "s")
