@@ -1,7 +1,10 @@
+# Copyright (C) Lukas Berger 2022
 import hashlib
+from heapq import merge
+from posixpath import split
 import time
 import numpy as np
-from typing import Dict, Tuple, List, Callable
+from typing import Dict, List, Callable
 
 # Determines at what factor the output table will be scaled down from worst case
 INITAL_OUTPUT_TABLE_SIZE_FACTOR = 1000000
@@ -93,8 +96,8 @@ def hash_join(table_1: np.ndarray, column_1: int, table_2 : np.ndarray, column_2
         key = x[column_1]
         if key not in hash_map:
             # add a tuple of index and an empty array
-            hash_map[key] = (0, np.empty((HASH_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64))
-            hash_map[key][1][1] = x
+            hash_map[key] = [0, np.empty((HASH_TABLE_INCREMENT_SIZE, table_1.shape[1]), dtype=np.uint64)]
+            hash_map[key][1][0] = x
             hash_map[key][0] += 1
         
         else:
@@ -111,6 +114,10 @@ def hash_join(table_1: np.ndarray, column_1: int, table_2 : np.ndarray, column_2
                 hash_map[key][1][current_index] = x
                 hash_map[key][0] += 1
                 
+    # prune tables
+    for key, value in hash_map.items():
+        index = value[0]
+        hash_map[key][1] = hash_map[key][1][:index,:]
 
     # join phase
     
@@ -118,27 +125,28 @@ def hash_join(table_1: np.ndarray, column_1: int, table_2 : np.ndarray, column_2
     # fiddeling with this factor can help with ram problems
     n = table_1.shape[0]
     m = table_2.shape[0]
-    output_table = np.empty((int((n * m) / INITAL_OUTPUT_TABLE_SIZE_FACTOR), table_1.shape[1] + table_2.shape[1]),
+    output_table = np.zeros((int((n * m) / INITAL_OUTPUT_TABLE_SIZE_FACTOR), table_1.shape[1] + table_2.shape[1]),
                             dtype=np.uint64)
     
     i = 0
     for row1 in table_2:
         key = row1[column_2] 
         if key in hash_map:
-            for row2 in hash_map[key]:
-                split = len(row1)
+            for row2 in hash_map[key][1]:
+                split = len(row2)
                 try:
                 # If index is running out of bound, allocate new memory and join it to the output_table
-                    output_table[i, :split] = row1
-                    output_table[i, split:] = row2
+                    output_table[i, :split] = row2
+                    output_table[i, split:] = row1
                 except IndexError:
                 # allocate 1,000,000 new rows
                     output_table = np.concatenate((output_table, 
-                                                np.empty((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
+                                                np.zeros((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
                                                 dtype=np.uint64)
-                    output_table[i, :split] = row1
-                    output_table[i, split:] = row2
-    return output_table
+                    output_table[i, :split] = row2
+                    output_table[i, split:] = row1
+                i += 1 
+    return output_table[:i]
 
 def sort_merge_join(table_1 : np.ndarray, index_1: int,
                     table_2: np.ndarray, index_2: int) -> np.ndarray:
@@ -164,11 +172,12 @@ def sort_merge_join(table_1 : np.ndarray, index_1: int,
     i_max = len(table_1) - 1
     j_max = len(table_2) - 1
     
-    # allocating the memory with an estimation that the size will be 10% of the absolute worst case O(N*M)
+    # allocating the memory with an estimation that the size will be some factor of the absolute worst case O(N*M)
     # fiddeling with this factor can help with ram problems
-    output_table = np.empty((int((i_max * j_max) / INITAL_OUTPUT_TABLE_SIZE_FACTOR), table_1.shape[1] + table_2.shape[1]),
+    output_table = np.zeros((int((i_max * j_max) / INITAL_OUTPUT_TABLE_SIZE_FACTOR), table_1.shape[1] + table_2.shape[1]),
                             dtype=np.uint64)
     count = 0
+    split = table_1.shape[1]
     while i <= i_max and j <= j_max:
         if table_1[i][index_1] > table_2[j][index_2]:
             j += 1
@@ -176,7 +185,6 @@ def sort_merge_join(table_1 : np.ndarray, index_1: int,
             i += 1
         else:
             # match was found
-            split = len(table_1[i])
             try:
                 # If index is running out of bound, allocate new memory and join it to the output_table
                 output_table[count, :split] = table_1[i]
@@ -184,7 +192,7 @@ def sort_merge_join(table_1 : np.ndarray, index_1: int,
             except IndexError:
                 # allocate 1,000,000 new rows
                 output_table = np.concatenate((output_table, 
-                                              np.empty((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
+                                              np.zeros((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
                                               dtype=np.uint64)
                 output_table[count, :split] = table_1[i]
                 output_table[count, split:] = table_2[j]
@@ -194,13 +202,13 @@ def sort_merge_join(table_1 : np.ndarray, index_1: int,
             while j_prime <= j_max and table_1[i][index_1] == table_2[j_prime][index_2]:
                 try:
                     output_table[count, :split] = table_1[i]
-                    output_table[count, split:] = table_2[j]
+                    output_table[count, split:] = table_2[j_prime]
                 except IndexError:
                     output_table = np.concatenate((output_table,
-                                                   np.empty((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
+                                                   np.zeros((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
                                                    dtype=np.uint64)
                     output_table[count, :split] = table_1[i]
-                    output_table[count, split:] = table_2[j]
+                    output_table[count, split:] = table_2[j_prime]
                 count += 1
                 j_prime += 1
             
@@ -208,13 +216,13 @@ def sort_merge_join(table_1 : np.ndarray, index_1: int,
             i_prime = i + 1
             while i_prime <= i_max and table_1[i_prime][index_1] == table_2[j][index_2]:
                 try:
-                    output_table[count, :split] = table_1[i]
+                    output_table[count, :split] = table_1[i_prime]
                     output_table[count, split:] = table_2[j]
                 except IndexError:
                     output_table = np.concatenate((output_table,
-                                                   np.empty((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
+                                                   np.zeros((OUTPUT_TABLE_INCREMENT_SIZE, table_1.shape[1] + table_2.shape[1]), dtype=np.uint64)),
                                                   dtype=np.uint64)
-                    output_table[count, :split] = table_1[i]
+                    output_table[count, :split] = table_1[i_prime]
                     output_table[count, split:] = table_2[j]
                 count += 1
                 i_prime += 1
@@ -222,7 +230,6 @@ def sort_merge_join(table_1 : np.ndarray, index_1: int,
             # increment indices
             i += 1
             j += 1
-    output_table = output_table[:count]
     return output_table[:count,:]
 
 
@@ -240,27 +247,26 @@ def merge_tables(merge_func: Callable[[np.ndarray, int, np.ndarray, int], np.nda
     """
     start = time.time()
     
-    #follows_table = tables["wsdbm:follows"]
-    follows_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/follows>"]
+    follows_table = tables["wsdbm:follows"]
+    #follows_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/follows>"]
     
-    #friend_of_table = tables["wsdbm:friendOf"]
-    friend_of_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/friendOf>"]
+    friend_of_table = tables["wsdbm:friendOf"]
+    #friend_of_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/friendOf>"]
     
-    #likes_table = tables["wsdbm:likes"]
-    likes_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/likes>"]
+    likes_table = tables["wsdbm:likes"]
+    #likes_table = tables["<http://db.uwaterloo.ca/~galuc/wsdbm/likes>"]
     
-    #has_review_table = tables["rev:hasReview"]
-    has_review_table = tables["<http://purl.org/stuff/rev#hasReview>"]
+    has_review_table = tables["rev:hasReview"]
+    #has_review_table = tables["<http://purl.org/stuff/rev#hasReview>"]
     
-    friend_follows = merge_func(follows_table, 0, friend_of_table, 1)
-    print(len(friend_follows))
-    merged = merge_func(friend_follows, 3, likes_table, 0)
-    print(merged)
+    friend_follows = merge_func(friend_of_table, 0, follows_table, 1)
+
+    merged = merge_func(friend_follows, 1, likes_table, 0)
     
-    #print(merged)
-    merged = merge_func(merged, 5, has_review_table, 0)
+    print(len(merged))
+    merged = merge_func(has_review_table, 0, merged, 5)
     
-    print(merged[-5:])
+    print("LENG: ", len(merged))
     return time.time() - start
 
 
@@ -268,6 +274,7 @@ if __name__ == "__main__":
     properties_big = ["<http://db.uwaterloo.ca/~galuc/wsdbm/follows>", "<http://db.uwaterloo.ca/~galuc/wsdbm/friendOf>",
                   "<http://db.uwaterloo.ca/~galuc/wsdbm/likes>", "<http://purl.org/stuff/rev#hasReview>"]
     properties_small = ["wsdbm:follows", "wsdbm:friendOf", "wsdbm:likes", "rev:hasReview"]
-    tables = get_tables("watdiv.10M.nt", properties=properties_big)
+    tables = get_tables("100k.txt", properties=properties_small)
     print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(sort_merge_join, tables), "s")
-    #print("TIME ELAPSED FOR MERGE JOIN: ", merge_tables(sort_merge_join, tables), "s")
+    print("TIME ELAPSED FOR HASH JOIN: ", merge_tables(hash_join, tables), "s")
+            
