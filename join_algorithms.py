@@ -1,10 +1,9 @@
 # Copyright (C) Lukas Berger 2022
 import hashlib
-from heapq import merge
-from posixpath import split
+import multiprocessing
 import time
 import numpy as np
-from typing import Dict, List, Callable
+from typing import Dict, List, Callable, Tuple
 
 # Determines at what factor the output table will be scaled down from worst case
 INITAL_OUTPUT_TABLE_SIZE_FACTOR = 1000000
@@ -164,7 +163,7 @@ def sort_merge_join(table_1 : np.ndarray, index_1: int,
     # sort values by their join column
     table_1 = table_1[table_1[:, index_1].argsort()]
     table_2 = table_2[table_2[:, index_2].argsort()]
-
+    #table_1, table_2 = sort_mulithreaded(table_1, index_1, table_2, index_2)
     # merge values
     # initialize indices
     i = 0
@@ -232,6 +231,21 @@ def sort_merge_join(table_1 : np.ndarray, index_1: int,
             j += 1
     return output_table[:count,:]
 
+def sort_mulithreaded(table_1, index_1, table_2, index_2):
+    manager = multiprocessing.Manager()
+    return_dict = manager.dict()
+    process_1 = multiprocessing.Process(target=sort_table_parallel, args=((table_1, index_1, "p1"), return_dict))
+    process_2 = multiprocessing.Process(target=sort_table_parallel, args=((table_2, index_2, "p2"), return_dict))
+    jobs = [process_1, process_2]
+    process_1.start()
+    process_2.start()
+    for job in jobs:
+        job.join()
+    return return_dict["p1"], return_dict["p2"]
+
+def sort_table_parallel(values : Tuple[np.ndarray, int, str], return_dict: Dict[str, np.ndarray]) -> np.ndarray:
+    table, index, process_name = values[0], values[1], values[2]
+    return_dict[process_name] =  table[table[:, index].argsort()]
 
 def merge_tables(merge_func: Callable[[np.ndarray, int, np.ndarray, int], np.ndarray],
                  tables: Dict[str, np.ndarray]) -> float:
@@ -258,15 +272,12 @@ def merge_tables(merge_func: Callable[[np.ndarray, int, np.ndarray, int], np.nda
     
     has_review_table = tables["rev:hasReview"]
     #has_review_table = tables["<http://purl.org/stuff/rev#hasReview>"]
-    
     friend_follows = merge_func(friend_of_table, 0, follows_table, 1)
 
     merged = merge_func(friend_follows, 1, likes_table, 0)
     
-    print(len(merged))
     merged = merge_func(has_review_table, 0, merged, 5)
-    
-    print("LENG: ", len(merged))
+    print(len(merged))
     return time.time() - start
 
 
