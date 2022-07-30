@@ -1,5 +1,7 @@
 package main
 
+// Copyright (c) Lukas Berger
+
 import (
 	"bufio"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -48,13 +51,14 @@ func parseLine(line string, hashMap map[string][]*Relation) {
 	}
 }
 
-func HashJoin(table1, table2 []*Relation, index1, index2 int, resultFile string) ([]*Relation, error) {
+func HashJoin(table1, table2 []*Relation, index1, index2 int) ([]*Relation, error) {
 	// build phase
 	hashMap := make(map[uint32][]*Relation)
 	for _, relation := range table1 {
 		hashMap[*relation.Values[index1]] = append(hashMap[*relation.Values[index1]], relation)
 	}
 
+	// join phase
 	outputTabe := []*Relation{}
 	for _, relation := range table2 {
 		if val, ok := hashMap[*relation.Values[index2]]; ok {
@@ -70,15 +74,30 @@ func HashJoin(table1, table2 []*Relation, index1, index2 int, resultFile string)
 	return outputTabe, nil
 }
 
-func SortMergeJoin(table1, table2 []*Relation, index1, index2 int, resultFile string) ([]*Relation, error) {
+func SortMergeJoin(table1, table2 []*Relation, index1, index2 int) ([]*Relation, error) {
 	// sort relations
-	sort.Slice(table1, func(i, j int) bool {
-		return *table1[i].Values[index1] < *table1[j].Values[index1]
-	})
-	sort.Slice(table2, func(i, j int) bool {
-		return *table2[i].Values[index2] < *table2[j].Values[index2]
-	})
 
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func(table1 []*Relation) {
+		defer wg.Done()
+		sort.Slice(table1, func(i, j int) bool {
+			return *table1[i].Values[index1] < *table1[j].Values[index1]
+		})
+	}(table1)
+
+	wg.Add(1)
+	go func(table2 []*Relation) {
+		sort.Slice(table2, func(i, j int) bool {
+			return *table2[i].Values[index2] < *table2[j].Values[index2]
+		})
+		defer wg.Done()
+	}(table2)
+
+	wg.Wait()
+
+	// merge relations
 	var outputTable []*Relation
 	i, j := 0, 0
 	for i < len(table1) && j < len(table2) {
@@ -124,20 +143,18 @@ func measureTimeSmallDataSet(joinFunc func(table1, table2 []*Relation, index1, i
 	if err != nil {
 		return ""
 	}
+	log.Println("LEN-1: ", len(newTable))
 
-	log.Println("phase 1: ", len(newTable))
 	newTable, err = joinFunc(tables["wsdbm:likes"], newTable, 0, 1)
 	if err != nil {
 		return "err"
 	}
-
-	log.Println("phase 2: ", len(newTable))
 	newTable, _ = joinFunc(tables["rev:hasReview"], newTable, 0, 1)
 	if err != nil {
 		return "err"
 	}
 
-	log.Println("phase 3: ", len(newTable))
+	log.Println(len(newTable))
 	return fmt.Sprintf("%s", time.Since(start))
 }
 
@@ -150,20 +167,24 @@ func measureTimeBigDataSet(joinFunc func(table1, table2 []*Relation, index1, ind
 		return ""
 	}
 
-	log.Println("phase 1: ", len(newTable))
 	newTable, err = joinFunc(tables["<http://db.uwaterloo.ca/~galuc/wsdbm/likes>"], newTable, 0, 1)
 	if err != nil {
 		return "err"
 	}
 
-	log.Println("phase 2: ", len(newTable))
-	newTable, _ = joinFunc(tables["<http://purl.org/stuff/rev#hasReview>"], newTable, 0, 1)
-	if err != nil {
-		return "err"
-	}
+	/*
+		Cannot execute this due to memory limitations :(
 
-	log.Println("phase 3: ", len(newTable))
-	return fmt.Sprintf("%s", time.Since(start))
+		log.Println("phase 2: ", len(newTable))
+		newTable, _ = joinFunc(tables["<http://purl.org/stuff/rev#hasReview>"], newTable, 0, 1)
+		if err != nil {
+			return "err"
+		}
+
+		log.Println("phase 3: ", len(newTable))
+	*/
+
+	return fmt.Sprintf("%.5f", time.Since(start).Seconds())
 }
 
 func WriteToDisc(filename string, values []*uint32) {
@@ -191,6 +212,8 @@ func WriteToDisc(filename string, values []*uint32) {
 
 func main() {
 	tables, _ := readFile("../watdiv.10M.nt")
-	log.Println("Time for Hash: ", measureTimeBigDataSet(HashJoin, tables))
-	log.Println("Time for Sort-Merge: ", measureTimeBigDataSet(SortMergeJoin, tables))
+	for i := 0; i < 11; i++ {
+		sortMergeTime := measureTimeBigDataSet(SortMergeJoin, tables)
+		log.Println(sortMergeTime)
+	}
 }
